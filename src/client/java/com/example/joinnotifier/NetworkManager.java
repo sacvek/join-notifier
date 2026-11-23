@@ -22,7 +22,7 @@ import java.util.concurrent.ConcurrentHashMap;
 
 public class NetworkManager {
     // ВСТАВЬ СЮДА СВОЮ НАСТОЯЩУЮ ССЫЛКУ ИЗ CLOUDFLARE (без слэша на конце)
-    public static final String API_URL = "https://join-notifier-api.mishfeld.workers.dev";
+    public static final String API_URL = "There was the url";
 
     private static final String USER_AGENT = "Mozilla/5.0 (Windows NT 10.0; Win64; x64) JoinNotifier/1.2.0";
     private static final Gson GSON = new Gson();
