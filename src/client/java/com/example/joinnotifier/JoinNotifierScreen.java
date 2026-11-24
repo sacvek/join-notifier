@@ -8,9 +8,7 @@ import net.minecraft.client.input.MouseButtonEvent;
 import net.minecraft.client.multiplayer.PlayerInfo;
 import net.minecraft.network.chat.Component;
 
-import java.util.ArrayList;
-import java.util.List;
-import java.util.Locale;
+import java.util.*;
 
 public class JoinNotifierScreen extends Screen {
     private static final int PANEL_WIDTH = 290;
@@ -18,8 +16,27 @@ public class JoinNotifierScreen extends Screen {
     private static final int ROW_HEIGHT = 23;
     private static final int VISIBLE_ROWS = 5;
 
+    private static class ListRow {
+        final boolean isGroupHeader;
+        final String groupName;
+        final PlayerEntry player;
+
+        ListRow(String groupName) {
+            this.isGroupHeader = true;
+            this.groupName = groupName;
+            this.player = null;
+        }
+
+        ListRow(PlayerEntry player) {
+            this.isGroupHeader = false;
+            this.groupName = player.group;
+            this.player = player;
+        }
+    }
+
     private EditBox nameInput;
-    private Button modeButton;
+    private Button filterButton;
+    private boolean onlyOnline = false;
     private int scrollOffset = 0;
 
     public JoinNotifierScreen() {
@@ -33,14 +50,14 @@ public class JoinNotifierScreen extends Screen {
         int left = (this.width - PANEL_WIDTH) / 2;
         int top = (this.height - PANEL_HEIGHT) / 2;
 
-        // Переключатель режима уведомлений: Чат / Плашка / Чат + Плашка
-        this.modeButton = Button.builder(getModeLabel(), button -> {
-            ConfigManager.cycleNotifyMode();
-            button.setMessage(getModeLabel());
-        }).bounds(left + 12, top + 26, 134, 18).build();
-        this.addRenderableWidget(this.modeButton);
+        // Фильтр списка: Все / Только онлайн
+        this.filterButton = Button.builder(getFilterLabel(), button -> {
+            this.onlyOnline = !this.onlyOnline;
+            button.setMessage(getFilterLabel());
+            clampScroll();
+        }).bounds(left + 12, top + 26, 126, 18).build();
+        this.addRenderableWidget(this.filterButton);
 
-        // Поле ввода ника снизу
         this.nameInput = new EditBox(
                 this.font,
                 left + 12,
@@ -71,12 +88,45 @@ public class JoinNotifierScreen extends Screen {
         }).bounds(left + 16 + btnWidth, btnY, btnWidth, 20).build());
     }
 
-    private Component getModeLabel() {
-        return switch (ConfigManager.getNotifyMode()) {
-            case CHAT -> Component.translatable("gui.joinnotifier.mode.chat");
-            case TOAST -> Component.translatable("gui.joinnotifier.mode.toast");
-            case BOTH -> Component.translatable("gui.joinnotifier.mode.both");
-        };
+    private Component getFilterLabel() {
+        return Component.translatable(this.onlyOnline
+                ? "gui.joinnotifier.filter.online"
+                : "gui.joinnotifier.filter.all");
+    }
+
+    private List<ListRow> buildDisplayRows() {
+        List<ListRow> rows = new ArrayList<>();
+        List<PlayerEntry> all = ConfigManager.getPlayers();
+
+        Map<String, List<PlayerEntry>> grouped = new LinkedHashMap<>();
+        List<PlayerEntry> ungrouped = new ArrayList<>();
+
+        for (PlayerEntry p : all) {
+            if (this.onlyOnline && !UiHelper.isPlayerOnline(p.name)) {
+                continue;
+            }
+            if (p.group != null && !p.group.trim().isEmpty()) {
+                grouped.computeIfAbsent(p.group.trim(), k -> new ArrayList<>()).add(p);
+            } else {
+                ungrouped.add(p);
+            }
+        }
+
+        for (Map.Entry<String, List<PlayerEntry>> entry : grouped.entrySet()) {
+            String grp = entry.getKey();
+            rows.add(new ListRow(grp));
+            if (!ConfigManager.isGroupCollapsed(grp)) {
+                for (PlayerEntry p : entry.getValue()) {
+                    rows.add(new ListRow(p));
+                }
+            }
+        }
+
+        for (PlayerEntry p : ungrouped) {
+            rows.add(new ListRow(p));
+        }
+
+        return rows;
     }
 
     private List<String> getAutocompleteSuggestions() {
@@ -109,14 +159,14 @@ public class JoinNotifierScreen extends Screen {
 
         UiHelper.drawVanillaPanel(graphics, left, top, PANEL_WIDTH, PANEL_HEIGHT);
 
-        // 1. Кнопка админ-панели (замок слева сверху)
-        int adminX = left + 8;
-        int adminY = top + 6;
-        boolean adminHover = UiHelper.isInside(mouseX, mouseY, adminX, adminY, 16, 16);
-        UiHelper.drawSmallButton(graphics, adminX, adminY, 16, 16, adminHover);
-        UiHelper.drawLockIcon(graphics, adminX + 4, adminY + 3);
+        // 1. Кнопка общих настроек (шестерёнка слева сверху)
+        int settingsX = left + 8;
+        int settingsY = top + 6;
+        boolean settingsHover = UiHelper.isInside(mouseX, mouseY, settingsX, settingsY, 16, 16);
+        UiHelper.drawSmallButton(graphics, settingsX, settingsY, 16, 16, settingsHover);
+        UiHelper.drawGearIcon(graphics, settingsX + 4, settingsY + 4);
 
-        // 2. Кнопка "Не беспокоить" (колокольчик рядом с замком)
+        // 2. Кнопка "Не беспокоить" (колокольчик)
         int dndX = left + 27;
         int dndY = top + 6;
         boolean dndHover = UiHelper.isInside(mouseX, mouseY, dndX, dndY, 16, 16);
@@ -126,7 +176,7 @@ public class JoinNotifierScreen extends Screen {
             UiHelper.drawRedSlash(graphics, dndX + 3, dndY + 3, 10);
         }
 
-        // 3. Кнопка Ideas с лампочкой (справа сверху)
+        // 3. Кнопка Ideas (справа сверху)
         int ideasW = 48;
         int ideasX = left + PANEL_WIDTH - ideasW - 8;
         int ideasY = top + 6;
@@ -135,41 +185,40 @@ public class JoinNotifierScreen extends Screen {
         UiHelper.drawLightbulbIcon(graphics, ideasX + 4, ideasY + 3);
         graphics.drawString(this.font, "Ideas", ideasX + 15, ideasY + 4, 0xFFFFFFFF, true);
 
-        // Заголовок по центру
+        // Заголовок
         int titleWidth = this.font.width(this.title);
         graphics.drawString(
                 this.font,
                 this.title,
                 left + (PANEL_WIDTH - titleWidth) / 2 + 4,
                 top + 10,
-                0xFF404040,
+                UiHelper.getPrimaryTextColor(),
                 false
         );
 
-        // Статус "Не беспокоить" справа от кнопки режима
-        // Статус "Не беспокоить" справа от кнопки режима
+        // Статус "Не беспокоить" справа от фильтра
         if (ConfigManager.isGlobalMute()) {
             graphics.drawString(
                     this.font,
                     Component.translatable("gui.joinnotifier.dnd_on"),
-                    left + 152,
+                    left + 144,
                     top + 31,
-                    0xFFAA2222,
+                    0xFFFF4444,
                     false
             );
         }
 
-        // Внутренняя рамка списка игроков
+        // Список игроков и групп
         int listLeft = left + 12;
         int listTop = top + 48;
         int listWidth = PANEL_WIDTH - 24;
         int listHeight = VISIBLE_ROWS * ROW_HEIGHT + 4;
         UiHelper.drawInsetBox(graphics, listLeft, listTop, listWidth, listHeight);
 
-        List<PlayerEntry> players = ConfigManager.getPlayers();
-        clampScroll();
+        List<ListRow> rows = buildDisplayRows();
+        clampScroll(rows.size());
 
-        if (players.isEmpty()) {
+        if (rows.isEmpty()) {
             Component emptyText = Component.translatable("gui.joinnotifier.empty");
             int emptyWidth = this.font.width(emptyText);
             graphics.drawString(
@@ -181,82 +230,104 @@ public class JoinNotifierScreen extends Screen {
                     true
             );
         } else {
-            int endIndex = Math.min(scrollOffset + VISIBLE_ROWS, players.size());
+            int endIndex = Math.min(scrollOffset + VISIBLE_ROWS, rows.size());
             for (int i = scrollOffset; i < endIndex; i++) {
                 int rowIndex = i - scrollOffset;
                 int rowX = listLeft + 2;
                 int rowY = listTop + 2 + rowIndex * ROW_HEIGHT;
                 int rowW = listWidth - 4;
 
-                PlayerEntry entry = players.get(i);
-
+                ListRow row = rows.get(i);
                 boolean rowHovered = UiHelper.isInside(mouseX, mouseY, rowX, rowY, rowW, ROW_HEIGHT - 1);
-                graphics.fill(rowX, rowY, rowX + rowW, rowY + ROW_HEIGHT - 1,
-                        rowHovered ? 0xFF7A7A7A : 0xFF6B6B6B);
 
-                // Голова скина слева
-                UiHelper.drawPlayerHead(graphics, entry.name, rowX + 4, rowY + 5, 12);
+                if (row.isGroupHeader) {
+                    // Отрисовка заголовка группы
+                    graphics.fill(rowX, rowY, rowX + rowW, rowY + ROW_HEIGHT - 1,
+                            rowHovered ? 0xFF4F5D6B : 0xFF3F4B57);
+                    boolean collapsed = ConfigManager.isGroupCollapsed(row.groupName);
+                    String arrow = collapsed ? "▶ " : "▼ ";
+                    graphics.drawString(this.font, arrow + row.groupName, rowX + 6, rowY + 7, 0xFFFFD83D, true);
 
-                int btnSize = 16;
-                int btnY = rowY + 3;
-                int removeBtnX = rowX + rowW - btnSize - 3;
-                int toggleBtnX = removeBtnX - btnSize - 3;
-                int editBtnX = toggleBtnX - btnSize - 3;
+                    int btnSize = 16;
+                    int btnY = rowY + 3;
+                    int groupToggleX = rowX + rowW - btnSize - 3;
+                    boolean hoverGrpToggle = UiHelper.isInside(mouseX, mouseY, groupToggleX, btnY, btnSize, btnSize);
+                    UiHelper.drawSmallButton(graphics, groupToggleX, btnY, btnSize, btnSize, hoverGrpToggle);
+                    graphics.drawString(this.font, "=", groupToggleX + 5, btnY + 4, 0xFFFFFFFF, true);
+                } else {
+                    PlayerEntry entry = row.player;
+                    int bgNormal = UiHelper.isDarkTheme() ? 0xFF2D2D2D : 0xFF6B6B6B;
+                    int bgHover = UiHelper.isDarkTheme() ? 0xFF3E3E3E : 0xFF7A7A7A;
+                    graphics.fill(rowX, rowY, rowX + rowW, rowY + ROW_HEIGHT - 1,
+                            rowHovered ? bgHover : bgNormal);
 
-                // Формирование строки: [Тег] Ник
-                String prefix = (entry.tag != null && !entry.tag.isEmpty()) ? "[" + entry.tag + "] " : "";
-                String displayName = prefix + entry.name;
-                int textColor = entry.enabled ? entry.getRgbColor() : 0xFFAAAAAA;
+                    int indent = (entry.group != null && !entry.group.isEmpty()) ? 8 : 0;
 
-                int maxNameW = editBtnX - (rowX + 22);
-                String trimmedName = this.font.plainSubstrByWidth(displayName, Math.max(20, maxNameW));
-                graphics.drawString(this.font, trimmedName, rowX + 20, rowY + 7, textColor, true);
+                    // Голова скина и индикатор онлайн/оффлайн
+                    UiHelper.drawPlayerHead(graphics, entry.name, rowX + 4 + indent, rowY + 5, 12);
+                    UiHelper.drawOnlineDot(graphics, rowX + 13 + indent, rowY + 14, UiHelper.isPlayerOnline(entry.name));
 
-                // Если задан фильтр по серверу или выход — показываем маленькую метку перед кнопками
-                int nameEndW = this.font.width(trimmedName);
-                String badges = "";
-                if (entry.notifyLeave) badges += "⇄";
-                if (entry.serverIp != null && !entry.serverIp.isEmpty()) badges += " [IP]";
-                if (!badges.isEmpty() && rowX + 22 + nameEndW + this.font.width(badges) < editBtnX) {
-                    graphics.drawString(this.font, badges, rowX + 22 + nameEndW, rowY + 7, 0xFFCCCCCC, false);
+                    int btnSize = 16;
+                    int btnY = rowY + 3;
+                    int removeBtnX = rowX + rowW - btnSize - 3;
+                    int toggleBtnX = removeBtnX - btnSize - 3;
+                    int editBtnX = toggleBtnX - btnSize - 3;
+
+                    boolean active = entry.isEffectivelyEnabled();
+                    String prefix = (entry.tag != null && !entry.tag.isEmpty()) ? "[" + entry.tag + "] " : "";
+                    String displayName = prefix + entry.name;
+                    int textColor = active ? entry.getRgbColor() : 0xFFAAAAAA;
+
+                    int maxNameW = editBtnX - (rowX + 22 + indent);
+                    String trimmedName = this.font.plainSubstrByWidth(displayName, Math.max(20, maxNameW));
+                    graphics.drawString(this.font, trimmedName, rowX + 20 + indent, rowY + 7, textColor, true);
+
+                    int nameEndW = this.font.width(trimmedName);
+                    String badges = "";
+                    if (entry.notifyLeave) badges += "⇄";
+                    if (!"NONE".equalsIgnoreCase(entry.sound)) badges += "♪";
+                    if (entry.serverIp != null && !entry.serverIp.isEmpty()) badges += " [IP]";
+                    if (!badges.isEmpty() && rowX + 22 + indent + nameEndW + this.font.width(badges) < editBtnX) {
+                        graphics.drawString(this.font, badges, rowX + 22 + indent + nameEndW, rowY + 7, 0xFFCCCCCC, false);
+                    }
+
+                    // Кнопка [⚙] (Настройки игрока)
+                    boolean hoverEdit = UiHelper.isInside(mouseX, mouseY, editBtnX, btnY, btnSize, btnSize);
+                    UiHelper.drawSmallButton(graphics, editBtnX, btnY, btnSize, btnSize, hoverEdit);
+                    graphics.drawString(this.font, "⚙", editBtnX + 4, btnY + 4,
+                            hoverEdit ? 0xFFFFD83D : 0xFFFFFFFF, true);
+
+                    // Кнопка [=] (Пауза / Таймер мута)
+                    boolean hoverToggle = UiHelper.isInside(mouseX, mouseY, toggleBtnX, btnY, btnSize, btnSize);
+                    UiHelper.drawSmallButton(graphics, toggleBtnX, btnY, btnSize, btnSize, hoverToggle);
+                    graphics.drawString(this.font, "=", toggleBtnX + 5, btnY + 4,
+                            active ? 0xFFFFFFFF : 0xFF999999, true);
+                    if (!active) {
+                        UiHelper.drawRedSlash(graphics, toggleBtnX + 3, btnY + 3, btnSize - 6);
+                    }
+
+                    // Кнопка [-] (Удалить игрока)
+                    boolean hoverRemove = UiHelper.isInside(mouseX, mouseY, removeBtnX, btnY, btnSize, btnSize);
+                    UiHelper.drawSmallButton(graphics, removeBtnX, btnY, btnSize, btnSize, hoverRemove);
+                    graphics.drawString(this.font, "-", removeBtnX + 5, btnY + 4,
+                            hoverRemove ? 0xFFFF6666 : 0xFFFFFFFF, true);
                 }
-
-                // Кнопка [⚙] (Настройки игрока: выход, тег, цвет, IP сервера)
-                boolean hoverEdit = UiHelper.isInside(mouseX, mouseY, editBtnX, btnY, btnSize, btnSize);
-                UiHelper.drawSmallButton(graphics, editBtnX, btnY, btnSize, btnSize, hoverEdit);
-                graphics.drawString(this.font, "⚙", editBtnX + 4, btnY + 4,
-                        hoverEdit ? 0xFFFFD83D : 0xFFFFFFFF, true);
-
-                // Кнопка [=] (Вкл/выкл уведомлений)
-                boolean hoverToggle = UiHelper.isInside(mouseX, mouseY, toggleBtnX, btnY, btnSize, btnSize);
-                UiHelper.drawSmallButton(graphics, toggleBtnX, btnY, btnSize, btnSize, hoverToggle);
-                graphics.drawString(this.font, "=", toggleBtnX + 5, btnY + 4,
-                        entry.enabled ? 0xFFFFFFFF : 0xFF999999, true);
-                if (!entry.enabled) {
-                    UiHelper.drawRedSlash(graphics, toggleBtnX + 3, btnY + 3, btnSize - 6);
-                }
-
-                // Кнопка [-] (Удалить игрока)
-                boolean hoverRemove = UiHelper.isInside(mouseX, mouseY, removeBtnX, btnY, btnSize, btnSize);
-                UiHelper.drawSmallButton(graphics, removeBtnX, btnY, btnSize, btnSize, hoverRemove);
-                graphics.drawString(this.font, "-", removeBtnX + 5, btnY + 4,
-                        hoverRemove ? 0xFFFF6666 : 0xFFFFFFFF, true);
             }
 
-            if (players.size() > VISIBLE_ROWS) {
+            if (rows.size() > VISIBLE_ROWS) {
                 Component scrollHint = Component.translatable(
                         "gui.joinnotifier.scroll",
                         scrollOffset + 1,
                         endIndex,
-                        players.size()
+                        rows.size()
                 );
                 int hintW = this.font.width(scrollHint);
                 graphics.drawString(this.font, scrollHint, listLeft + listWidth - hintW,
-                        listTop + listHeight + 3, 0xFF555555, false);
+                        listTop + listHeight + 3, UiHelper.getSecondaryTextColor(), false);
             }
         }
 
-        // Выпадающий список автодополнения ников с текущего сервера
+        // Выпадающий список автодополнения ников
         List<String> suggestions = getAutocompleteSuggestions();
         if (!suggestions.isEmpty()) {
             int itemH = 16;
@@ -290,7 +361,6 @@ public class JoinNotifierScreen extends Screen {
             int left = (this.width - PANEL_WIDTH) / 2;
             int top = (this.height - PANEL_HEIGHT) / 2;
 
-            // Клик по подсказке автодополнения (проверяем первым, так как она поверх списка)
             List<String> suggestions = getAutocompleteSuggestions();
             if (!suggestions.isEmpty()) {
                 int itemH = 16;
@@ -308,9 +378,9 @@ public class JoinNotifierScreen extends Screen {
                 }
             }
 
-            // Клик по замку (Админ-панель)
+            // Клик по шестерёнке (Общие настройки)
             if (UiHelper.isInside(mouseX, mouseY, left + 8, top + 6, 16, 16)) {
-                if (this.minecraft != null) this.minecraft.setScreen(new AdminLoginScreen(this));
+                if (this.minecraft != null) this.minecraft.setScreen(new SettingsScreen(this));
                 return true;
             }
 
@@ -328,13 +398,12 @@ public class JoinNotifierScreen extends Screen {
                 return true;
             }
 
-            // Клик по строкам списка игроков
             int listLeft = left + 12;
             int listTop = top + 48;
             int listWidth = PANEL_WIDTH - 24;
 
-            List<PlayerEntry> players = ConfigManager.getPlayers();
-            int endIndex = Math.min(scrollOffset + VISIBLE_ROWS, players.size());
+            List<ListRow> rows = buildDisplayRows();
+            int endIndex = Math.min(scrollOffset + VISIBLE_ROWS, rows.size());
 
             for (int i = scrollOffset; i < endIndex; i++) {
                 int rowIndex = i - scrollOffset;
@@ -342,39 +411,55 @@ public class JoinNotifierScreen extends Screen {
                 int rowY = listTop + 2 + rowIndex * ROW_HEIGHT;
                 int rowW = listWidth - 4;
 
+                ListRow row = rows.get(i);
                 int btnSize = 16;
                 int btnY = rowY + 3;
-                int removeBtnX = rowX + rowW - btnSize - 3;
-                int toggleBtnX = removeBtnX - btnSize - 3;
-                int editBtnX = toggleBtnX - btnSize - 3;
 
-                PlayerEntry entry = players.get(i);
-
-                // Нажатие на [⚙] (открывает настройки игрока)
-                if (UiHelper.isInside(mouseX, mouseY, editBtnX, btnY, btnSize, btnSize)) {
-                    if (this.minecraft != null) {
-                        this.minecraft.setScreen(new PlayerEditScreen(this, entry));
+                if (row.isGroupHeader) {
+                    int groupToggleX = rowX + rowW - btnSize - 3;
+                    if (UiHelper.isInside(mouseX, mouseY, groupToggleX, btnY, btnSize, btnSize)) {
+                        ConfigManager.toggleGroupEnabled(row.groupName);
+                        return true;
                     }
-                    return true;
-                }
+                    if (UiHelper.isInside(mouseX, mouseY, rowX, rowY, rowW, ROW_HEIGHT - 1)) {
+                        ConfigManager.toggleGroupCollapsed(row.groupName);
+                        clampScroll();
+                        return true;
+                    }
+                } else {
+                    PlayerEntry entry = row.player;
+                    int removeBtnX = rowX + rowW - btnSize - 3;
+                    int toggleBtnX = removeBtnX - btnSize - 3;
+                    int editBtnX = toggleBtnX - btnSize - 3;
 
-                // Нажатие на [=]
-                if (UiHelper.isInside(mouseX, mouseY, toggleBtnX, btnY, btnSize, btnSize)) {
-                    ConfigManager.togglePlayer(entry);
-                    return true;
-                }
+                    if (UiHelper.isInside(mouseX, mouseY, editBtnX, btnY, btnSize, btnSize)) {
+                        if (this.minecraft != null) {
+                            this.minecraft.setScreen(new PlayerEditScreen(this, entry));
+                        }
+                        return true;
+                    }
 
-                // Нажатие на [-]
-                if (UiHelper.isInside(mouseX, mouseY, removeBtnX, btnY, btnSize, btnSize)) {
-                    ConfigManager.removePlayer(entry.name);
-                    clampScroll();
-                    return true;
-                }
+                    // Клик по [=]: если на паузе — сразу включаем, если активен — открываем выбор таймера мута
+                    if (UiHelper.isInside(mouseX, mouseY, toggleBtnX, btnY, btnSize, btnSize)) {
+                        if (!entry.isEffectivelyEnabled()) {
+                            entry.clearMute();
+                            ConfigManager.save();
+                        } else if (this.minecraft != null) {
+                            this.minecraft.setScreen(new MuteTimerScreen(this, entry));
+                        }
+                        return true;
+                    }
 
-                // Нажатие на строку подставляет ник в поле снизу
-                if (UiHelper.isInside(mouseX, mouseY, rowX, rowY, rowW, ROW_HEIGHT - 1)) {
-                    this.nameInput.setValue(entry.name);
-                    return true;
+                    if (UiHelper.isInside(mouseX, mouseY, removeBtnX, btnY, btnSize, btnSize)) {
+                        ConfigManager.removePlayer(entry.name);
+                        clampScroll();
+                        return true;
+                    }
+
+                    if (UiHelper.isInside(mouseX, mouseY, rowX, rowY, rowW, ROW_HEIGHT - 1)) {
+                        this.nameInput.setValue(entry.name);
+                        return true;
+                    }
                 }
             }
         }
@@ -383,18 +468,22 @@ public class JoinNotifierScreen extends Screen {
 
     @Override
     public boolean mouseScrolled(double mouseX, double mouseY, double scrollX, double scrollY) {
-        List<PlayerEntry> players = ConfigManager.getPlayers();
-        if (players.size() > VISIBLE_ROWS) {
+        List<ListRow> rows = buildDisplayRows();
+        if (rows.size() > VISIBLE_ROWS) {
             if (scrollY < 0) scrollOffset++;
             else if (scrollY > 0) scrollOffset--;
-            clampScroll();
+            clampScroll(rows.size());
             return true;
         }
         return super.mouseScrolled(mouseX, mouseY, scrollX, scrollY);
     }
 
     private void clampScroll() {
-        int maxScroll = Math.max(0, ConfigManager.getPlayers().size() - VISIBLE_ROWS);
+        clampScroll(buildDisplayRows().size());
+    }
+
+    private void clampScroll(int totalRows) {
+        int maxScroll = Math.max(0, totalRows - VISIBLE_ROWS);
         if (scrollOffset > maxScroll) scrollOffset = maxScroll;
         if (scrollOffset < 0) scrollOffset = 0;
     }
