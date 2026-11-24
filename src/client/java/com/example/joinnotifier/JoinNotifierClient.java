@@ -14,6 +14,7 @@ import net.minecraft.client.multiplayer.PlayerInfo;
 import net.minecraft.client.multiplayer.ServerData;
 import net.minecraft.network.chat.Component;
 import net.minecraft.network.chat.MutableComponent;
+import net.minecraft.sounds.SoundEvent;
 import org.lwjgl.glfw.GLFW;
 
 import java.util.HashSet;
@@ -54,6 +55,9 @@ public class JoinNotifierClient implements ClientModInitializer {
 			}
 
 			if (client.level == null || client.getConnection() == null) {
+				if (initialized) {
+					ConfigManager.onDisconnectAll();
+				}
 				onlinePlayers.clear();
 				initialized = false;
 				warmupTicks = 0;
@@ -79,7 +83,6 @@ public class JoinNotifierClient implements ClientModInitializer {
 				return;
 			}
 
-			// Если включён режим "Не беспокоить" или сервер заблокирован в админке
 			if (ConfigManager.isGlobalMute() || NetworkManager.isCurrentServerBlocked(client)) {
 				onlinePlayers = currentPlayers;
 				return;
@@ -91,17 +94,17 @@ public class JoinNotifierClient implements ClientModInitializer {
 			for (String playerName : currentPlayers) {
 				if (!onlinePlayers.contains(playerName)) {
 					PlayerEntry entry = ConfigManager.getEntry(playerName);
-					if (entry != null && entry.enabled && entry.matchesServer(currentServerIp)) {
+					if (entry != null && entry.isEffectivelyEnabled() && entry.matchesServer(currentServerIp)) {
 						dispatchNotification(client, entry, playerName, true);
 					}
 				}
 			}
 
-			// 2. Проверка вышедших игроков (если у игрока включено notifyLeave)
+			// 2. Проверка вышедших игроков
 			for (String oldPlayer : onlinePlayers) {
 				if (!currentPlayers.contains(oldPlayer)) {
 					PlayerEntry entry = ConfigManager.getEntry(oldPlayer);
-					if (entry != null && entry.enabled && entry.notifyLeave && entry.matchesServer(currentServerIp)) {
+					if (entry != null && entry.isEffectivelyEnabled() && entry.notifyLeave && entry.matchesServer(currentServerIp)) {
 						dispatchNotification(client, entry, oldPlayer, false);
 					}
 				}
@@ -144,6 +147,12 @@ public class JoinNotifierClient implements ClientModInitializer {
 					Component.literal("Join Notifier").withStyle(ChatFormatting.GOLD),
 					Component.translatable(translationKey, styledPlayer)
 			);
+		}
+
+		// Проигрывание выбранного звука
+		SoundEvent sound = entry.getSoundEvent();
+		if (sound != null && client.player != null) {
+			client.player.playSound(sound, 1.0F, 1.0F);
 		}
 	}
 }
