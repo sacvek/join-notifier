@@ -7,10 +7,11 @@ import net.minecraft.client.gui.screens.Screen;
 import net.minecraft.client.input.MouseButtonEvent;
 import net.minecraft.client.multiplayer.ServerData;
 import net.minecraft.network.chat.Component;
+import net.minecraft.sounds.SoundEvent;
 
 public class PlayerEditScreen extends Screen {
-    private static final int PANEL_WIDTH = 276;
-    private static final int PANEL_HEIGHT = 216;
+    private static final int PANEL_WIDTH = 280;
+    private static final int PANEL_HEIGHT = 278;
 
     private static final String[] COLOR_KEYS = {
             "GREEN", "AQUA", "GOLD", "LIGHT_PURPLE", "YELLOW", "RED", "WHITE"
@@ -18,22 +19,27 @@ public class PlayerEditScreen extends Screen {
     private static final int[] COLOR_RGB = {
             0xFF55FF55, 0xFF55FFFF, 0xFFFFAA00, 0xFFFF55FF, 0xFFFFFF55, 0xFFFF5555, 0xFFFFFFFF
     };
+    private static final String[] SOUND_KEYS = {
+            "NONE", "BELL", "XP", "LEVEL", "CAT", "ANVIL", "NOTE"
+    };
 
     private final Screen parent;
     private final PlayerEntry entry;
 
     private boolean notifyLeave;
     private String selectedColor;
+    private String selectedSound;
     private EditBox tagInput;
+    private EditBox groupInput;
     private EditBox serverInput;
-    private Button eventModeButton;
 
     public PlayerEditScreen(Screen parent, PlayerEntry entry) {
-        super(Component.literal("Настройка: " + entry.name));
+        super(Component.translatable("gui.joinnotifier.edit.title", entry.name));
         this.parent = parent;
         this.entry = entry;
         this.notifyLeave = entry.notifyLeave;
         this.selectedColor = entry.color != null ? entry.color : "GREEN";
+        this.selectedSound = entry.sound != null ? entry.sound : "NONE";
     }
 
     @Override
@@ -42,69 +48,96 @@ public class PlayerEditScreen extends Screen {
 
         int left = (this.width - PANEL_WIDTH) / 2;
         int top = (this.height - PANEL_HEIGHT) / 2;
+        int fullW = PANEL_WIDTH - 24;
 
-        // 1. Кнопка переключения событий: Только вход / Вход и выход
-        this.eventModeButton = Button.builder(getEventButtonLabel(), button -> {
+        // 1. События (Вход / Вход и выход)
+        this.addRenderableWidget(Button.builder(getEventButtonLabel(), button -> {
             this.notifyLeave = !this.notifyLeave;
             button.setMessage(getEventButtonLabel());
-        }).bounds(left + 12, top + 34, PANEL_WIDTH - 24, 20).build();
-        this.addRenderableWidget(this.eventModeButton);
+        }).bounds(left + 12, top + 30, fullW, 20).build());
 
-        // 2. Поле ввода кастомного тега (например: Друг)
-        this.tagInput = new EditBox(
-                this.font,
-                left + 12,
-                top + 72,
-                PANEL_WIDTH - 24,
-                18,
-                Component.literal("Тег")
-        );
+        // 2. Тег игрока
+        this.tagInput = new EditBox(this.font, left + 12, top + 66, fullW, 18,
+                Component.translatable("gui.joinnotifier.edit.tag_label"));
         this.tagInput.setMaxLength(12);
-        this.tagInput.setHint(Component.literal("Тег в чате (например: Друг)"));
+        this.tagInput.setHint(Component.translatable("gui.joinnotifier.edit.tag_hint"));
         this.tagInput.setValue(this.entry.tag != null ? this.entry.tag : "");
         this.addRenderableWidget(this.tagInput);
 
-        // 3. Поле IP сервера + кнопка "Текущий"
-        int currentBtnW = 64;
-        this.serverInput = new EditBox(
-                this.font,
-                left + 12,
-                top + 138,
-                PANEL_WIDTH - 28 - currentBtnW,
-                18,
-                Component.literal("IP сервера")
-        );
+        // 3. Группа / Категория
+        this.groupInput = new EditBox(this.font, left + 12, top + 100, fullW, 18,
+                Component.translatable("gui.joinnotifier.edit.group_label"));
+        this.groupInput.setMaxLength(16);
+        this.groupInput.setHint(Component.translatable("gui.joinnotifier.edit.group_hint"));
+        this.groupInput.setValue(this.entry.group != null ? this.entry.group : "");
+        this.addRenderableWidget(this.groupInput);
+
+        // 4. Звук уведомления + кнопка прослушивания [▶]
+        int playBtnW = 24;
+        this.addRenderableWidget(Button.builder(getSoundButtonLabel(), button -> {
+            cycleSound();
+            button.setMessage(getSoundButtonLabel());
+        }).bounds(left + 12, top + 162, fullW - playBtnW - 4, 20).build());
+
+        this.addRenderableWidget(Button.builder(Component.literal("▶"), button -> {
+            SoundEvent se = PlayerEntry.getSoundEventByKey(this.selectedSound);
+            if (se != null && this.minecraft != null && this.minecraft.player != null) {
+                this.minecraft.player.playSound(se, 1.0F, 1.0F);
+            }
+        }).bounds(left + PANEL_WIDTH - 12 - playBtnW, top + 162, playBtnW, 20).build());
+
+        // 5. Фильтр по серверу (IP) + кнопка "Текущий"
+        int currentBtnW = 68;
+        this.serverInput = new EditBox(this.font, left + 12, top + 200, fullW - currentBtnW - 4, 18,
+                Component.translatable("gui.joinnotifier.edit.server_label"));
         this.serverInput.setMaxLength(64);
-        this.serverInput.setHint(Component.literal("Пусто = все серверы"));
+        this.serverInput.setHint(Component.translatable("gui.joinnotifier.edit.server_hint"));
         this.serverInput.setValue(this.entry.serverIp != null ? this.entry.serverIp : "");
         this.addRenderableWidget(this.serverInput);
 
-        this.addRenderableWidget(Button.builder(Component.literal("Текущий"), button -> {
+        this.addRenderableWidget(Button.builder(Component.translatable("gui.joinnotifier.edit.current_server"), button -> {
             if (this.minecraft != null && this.minecraft.getCurrentServer() != null) {
                 ServerData data = this.minecraft.getCurrentServer();
                 if (data.ip != null) {
                     this.serverInput.setValue(PlayerEntry.normalizeIp(data.ip));
                 }
             }
-        }).bounds(left + PANEL_WIDTH - 12 - currentBtnW, top + 137, currentBtnW, 20).build());
+        }).bounds(left + PANEL_WIDTH - 12 - currentBtnW, top + 199, currentBtnW, 20).build());
 
-        // 4. Кнопка Сохранить снизу
-        this.addRenderableWidget(Button.builder(Component.literal("Сохранить"), button -> {
+        // 6. Сохранить
+        this.addRenderableWidget(Button.builder(Component.translatable("gui.joinnotifier.edit.save"), button -> {
             this.entry.notifyLeave = this.notifyLeave;
             this.entry.tag = this.tagInput.getValue().trim();
+            this.entry.group = this.groupInput.getValue().trim();
             this.entry.color = this.selectedColor;
+            this.entry.sound = this.selectedSound;
             this.entry.serverIp = PlayerEntry.normalizeIp(this.serverInput.getValue());
             ConfigManager.save();
             if (this.minecraft != null) {
                 this.minecraft.setScreen(this.parent);
             }
-        }).bounds(left + 12, top + PANEL_HEIGHT - 30, PANEL_WIDTH - 24, 20).build());
+        }).bounds(left + 12, top + PANEL_HEIGHT - 28, fullW, 20).build());
     }
 
     private Component getEventButtonLabel() {
-        return Component.literal(this.notifyLeave
-                ? "События: Вход и выход с сервера"
-                : "События: Только вход на сервер");
+        return Component.translatable(this.notifyLeave
+                ? "gui.joinnotifier.edit.events_both"
+                : "gui.joinnotifier.edit.events_join");
+    }
+
+    private void cycleSound() {
+        for (int i = 0; i < SOUND_KEYS.length; i++) {
+            if (SOUND_KEYS[i].equalsIgnoreCase(this.selectedSound)) {
+                this.selectedSound = SOUND_KEYS[(i + 1) % SOUND_KEYS.length];
+                return;
+            }
+        }
+        this.selectedSound = "NONE";
+    }
+
+    private Component getSoundButtonLabel() {
+        Component soundName = Component.translatable("gui.joinnotifier.sound." + this.selectedSound.toLowerCase());
+        return Component.translatable("gui.joinnotifier.edit.sound_btn", soundName);
     }
 
     @Override
@@ -113,29 +146,27 @@ public class PlayerEditScreen extends Screen {
 
         int left = (this.width - PANEL_WIDTH) / 2;
         int top = (this.height - PANEL_HEIGHT) / 2;
+        int textColor = UiHelper.getPrimaryTextColor();
 
         UiHelper.drawVanillaPanel(graphics, left, top, PANEL_WIDTH, PANEL_HEIGHT);
 
-        // Кнопка назад
         int backX = left + 8;
         int backY = top + 6;
         boolean backHover = UiHelper.isInside(mouseX, mouseY, backX, backY, 18, 16);
         UiHelper.drawSmallButton(graphics, backX, backY, 18, 16, backHover);
         graphics.drawString(this.font, "←", backX + 5, backY + 4, 0xFFFFFFFF, true);
 
-        // Голова игрока и заголовок
         int titleW = this.font.width(this.title);
         int headerX = left + (PANEL_WIDTH - titleW - 16) / 2;
         UiHelper.drawPlayerHead(graphics, this.entry.name, headerX, top + 8, 12);
-        graphics.drawString(this.font, this.title, headerX + 16, top + 10, 0xFF404040, false);
+        graphics.drawString(this.font, this.title, headerX + 16, top + 10, textColor, false);
 
-        // Подписи секций
-        graphics.drawString(this.font, "Тег игрока (необязательно):", left + 12, top + 60, 0xFF404040, false);
-        graphics.drawString(this.font, "Цвет подсветки ника:", left + 12, top + 96, 0xFF404040, false);
+        graphics.drawString(this.font, Component.translatable("gui.joinnotifier.edit.tag_label"), left + 12, top + 55, textColor, false);
+        graphics.drawString(this.font, Component.translatable("gui.joinnotifier.edit.group_label"), left + 12, top + 89, textColor, false);
+        graphics.drawString(this.font, Component.translatable("gui.joinnotifier.edit.color_label"), left + 12, top + 123, textColor, false);
 
-        // Палитра из 7 цветов
         int swatchStartX = left + 12;
-        int swatchY = top + 108;
+        int swatchY = top + 135;
         int swatchSize = 16;
         for (int i = 0; i < COLOR_KEYS.length; i++) {
             int sx = swatchStartX + i * (swatchSize + 5);
@@ -145,16 +176,15 @@ public class PlayerEditScreen extends Screen {
             graphics.fill(sx, swatchY, sx + swatchSize, swatchY + swatchSize, COLOR_RGB[i]);
         }
 
-        // Предпросмотр того, как ник будет выглядеть в чате
         String previewTag = this.tagInput.getValue().trim();
         String previewText = (previewTag.isEmpty() ? "" : "[" + previewTag + "] ") + this.entry.name;
         int previewRgb = getSelectedRgb();
         int previewBoxX = swatchStartX + COLOR_KEYS.length * (swatchSize + 5) + 4;
-        graphics.fill(previewBoxX, swatchY - 1, left + PANEL_WIDTH - 12, swatchY + swatchSize + 1, 0xFF2B2B2B);
+        graphics.fill(previewBoxX, swatchY - 1, left + PANEL_WIDTH - 12, swatchY + swatchSize + 1, 0xFF1B1B1B);
         String shortPreview = this.font.plainSubstrByWidth(previewText, (left + PANEL_WIDTH - 16) - (previewBoxX + 4));
         graphics.drawString(this.font, shortPreview, previewBoxX + 4, swatchY + 4, previewRgb, true);
 
-        graphics.drawString(this.font, "Фильтр по серверу (IP):", left + 12, top + 127, 0xFF404040, false);
+        graphics.drawString(this.font, Component.translatable("gui.joinnotifier.edit.server_label"), left + 12, top + 189, textColor, false);
     }
 
     private int getSelectedRgb() {
@@ -171,19 +201,16 @@ public class PlayerEditScreen extends Screen {
         if (event.button() == 0) {
             double mx = event.x();
             double my = event.y();
-
             int left = (this.width - PANEL_WIDTH) / 2;
             int top = (this.height - PANEL_HEIGHT) / 2;
 
-            // Кнопка назад
             if (UiHelper.isInside(mx, my, left + 8, top + 6, 18, 16)) {
                 if (this.minecraft != null) this.minecraft.setScreen(this.parent);
                 return true;
             }
 
-            // Клик по квадратику цвета
             int swatchStartX = left + 12;
-            int swatchY = top + 108;
+            int swatchY = top + 135;
             int swatchSize = 16;
             for (int i = 0; i < COLOR_KEYS.length; i++) {
                 int sx = swatchStartX + i * (swatchSize + 5);
