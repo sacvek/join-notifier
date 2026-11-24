@@ -8,18 +8,19 @@ import net.minecraft.client.input.MouseButtonEvent;
 import net.minecraft.network.chat.Component;
 
 public class IdeasScreen extends Screen {
-    private static final int PANEL_WIDTH = 304;
-    private static final int PANEL_HEIGHT = 160;
+    private static final int PANEL_WIDTH = 290;
+    private static final int PANEL_HEIGHT = 152;
 
     private final Screen parent;
     private EditBox ideaInput;
     private Button sendButton;
 
-    private boolean isOnline = false;
+    private boolean checking = true;
+    private boolean sending = false;
+    private boolean internetOk = false;
     private boolean isBanned = false;
-    private boolean isSending = false;
-    private Component statusText = Component.translatable("gui.joinnotifier.ideas.checking");
-    private Component subStatusText = Component.empty();
+    private String banReason = "";
+    private Component statusMessage = Component.empty();
     private int statusColor = 0xFF555555;
 
     public IdeasScreen(Screen parent) {
@@ -37,97 +38,103 @@ public class IdeasScreen extends Screen {
         this.ideaInput = new EditBox(
                 this.font,
                 left + 12,
-                top + 56,
+                top + 48,
                 PANEL_WIDTH - 24,
-                22,
+                20,
                 Component.translatable("gui.joinnotifier.ideas.label")
         );
         this.ideaInput.setMaxLength(300);
         this.ideaInput.setHint(Component.translatable("gui.joinnotifier.ideas.hint"));
-        this.ideaInput.setResponder(text -> updateButtonState());
+        this.ideaInput.setEditable(false);
         this.addRenderableWidget(this.ideaInput);
 
-        this.sendButton = Button.builder(Component.translatable("gui.joinnotifier.ideas.send"), button -> {
-            String text = this.ideaInput.getValue().trim();
-            if (text.isEmpty() || !this.isOnline || this.isBanned || this.isSending) return;
-
-            this.isSending = true;
-            this.statusText = Component.translatable("gui.joinnotifier.ideas.sending");
-            this.subStatusText = Component.empty();
-            this.statusColor = 0xFF555555;
-            updateButtonState();
-
-            String author = this.minecraft != null && this.minecraft.getUser() != null
-                    ? this.minecraft.getUser().getName()
-                    : "Unknown";
-
-            NetworkManager.submitIdeaAsync(author, text).thenAccept(res -> {
-                if (this.minecraft != null) {
-                    this.minecraft.execute(() -> {
-                        this.isSending = false;
-                        switch (res.status) {
-                            case "OK" -> {
-                                this.ideaInput.setValue("");
-                                this.statusText = Component.translatable("gui.joinnotifier.ideas.sent");
-                                this.subStatusText = Component.empty();
-                                this.statusColor = 0xFF1F7A1F;
-                            }
-                            case "BANNED" -> {
-                                this.isBanned = true;
-                                this.statusText = Component.translatable("gui.joinnotifier.ideas.banned");
-                                this.subStatusText = Component.translatable("gui.joinnotifier.ideas.ban_reason", res.detail);
-                                this.statusColor = 0xFFAA2222;
-                            }
-                            default -> {
-                                this.isOnline = false;
-                                this.statusText = res.detail;
-                                this.subStatusText = Component.empty();
-                                this.statusColor = 0xFFAA2222;
-                            }
-                        }
-                        updateButtonState();
-                    });
-                }
-            });
-        }).bounds(left + 12, top + PANEL_HEIGHT - 32, PANEL_WIDTH - 24, 20).build();
-
+        this.sendButton = Button.builder(Component.translatable("gui.joinnotifier.ideas.send"), button -> sendIdea())
+                .bounds(left + 12, top + 76, PANEL_WIDTH - 24, 20)
+                .build();
         this.sendButton.active = false;
         this.addRenderableWidget(this.sendButton);
 
-        String username = this.minecraft != null && this.minecraft.getUser() != null
-                ? this.minecraft.getUser().getName()
-                : "";
+        startConnectionAndBanCheck();
+    }
+
+    private String getPlayerUsername() {
+        if (this.minecraft != null && this.minecraft.getUser() != null) {
+            return this.minecraft.getUser().getName();
+        }
+        return "Unknown";
+    }
+
+    private void startConnectionAndBanCheck() {
+        this.checking = true;
+        this.statusMessage = Component.translatable("gui.joinnotifier.ideas.checking");
+        this.statusColor = UiHelper.getSecondaryTextColor();
+
+        String username = getPlayerUsername();
         NetworkManager.syncAsync(username).thenAccept(res -> {
             if (this.minecraft != null) {
                 this.minecraft.execute(() -> {
-                    this.isOnline = res.online;
-                    this.isBanned = res.banned;
+                    this.checking = false;
                     if (!res.online) {
-                        this.statusText = res.errorComponent;
-                        this.subStatusText = Component.empty();
-                        this.statusColor = 0xFFAA2222;
+                        this.internetOk = false;
+                        this.statusMessage = res.errorComponent;
+                        this.statusColor = 0xFFCC3333;
+                        this.ideaInput.setEditable(false);
+                        this.sendButton.active = false;
                     } else if (res.banned) {
-                        this.statusText = Component.translatable("gui.joinnotifier.ideas.banned");
-                        Component reasonComp = NetworkManager.isDefaultReason(res.banReason)
-                                ? Component.translatable("gui.joinnotifier.net.default_reason")
-                                : Component.literal(res.banReason);
-                        this.subStatusText = Component.translatable("gui.joinnotifier.ideas.ban_reason", reasonComp);
-                        this.statusColor = 0xFFAA2222;
+                        this.internetOk = true;
+                        this.isBanned = true;
+                        this.banReason = res.banReason != null ? res.banReason : "";
+                        this.statusMessage = Component.translatable("gui.joinnotifier.ideas.banned");
+                        this.statusColor = 0xFFCC2222;
+                        this.ideaInput.setEditable(false);
+                        this.sendButton.active = false;
                     } else {
-                        this.statusText = Component.translatable("gui.joinnotifier.ideas.author", username);
-                        this.subStatusText = Component.empty();
-                        this.statusColor = 0xFF404040;
+                        this.internetOk = true;
+                        this.isBanned = false;
+                        this.statusMessage = Component.empty();
+                        this.ideaInput.setEditable(true);
+                        this.sendButton.active = true;
                     }
-                    updateButtonState();
                 });
             }
         });
     }
 
-    private void updateButtonState() {
-        if (this.sendButton == null || this.ideaInput == null) return;
-        boolean hasText = !this.ideaInput.getValue().trim().isEmpty();
-        this.sendButton.active = this.isOnline && !this.isBanned && !this.isSending && hasText;
+    private void sendIdea() {
+        String text = this.ideaInput.getValue().trim();
+        if (text.isEmpty() || this.sending || !this.internetOk || this.isBanned) return;
+
+        this.sending = true;
+        this.sendButton.active = false;
+        this.ideaInput.setEditable(false);
+        this.statusMessage = Component.translatable("gui.joinnotifier.ideas.sending");
+        this.statusColor = UiHelper.getSecondaryTextColor();
+
+        String username = getPlayerUsername();
+        NetworkManager.submitIdeaAsync(username, text).thenAccept(res -> {
+            if (this.minecraft != null) {
+                this.minecraft.execute(() -> {
+                    this.sending = false;
+                    if ("OK".equals(res.status)) {
+                        this.ideaInput.setValue("");
+                        this.statusMessage = Component.translatable("gui.joinnotifier.ideas.sent");
+                        this.statusColor = 0xFF2E9E2E;
+                        this.ideaInput.setEditable(true);
+                        this.sendButton.active = true;
+                    } else if ("BANNED".equals(res.status)) {
+                        this.isBanned = true;
+                        this.banReason = res.detail != null ? res.detail.getString() : "";
+                        this.statusMessage = Component.translatable("gui.joinnotifier.ideas.banned");
+                        this.statusColor = 0xFFCC2222;
+                    } else {
+                        this.statusMessage = res.detail;
+                        this.statusColor = 0xFFCC3333;
+                        this.ideaInput.setEditable(true);
+                        this.sendButton.active = true;
+                    }
+                });
+            }
+        });
     }
 
     @Override
@@ -145,21 +152,27 @@ public class IdeasScreen extends Screen {
         UiHelper.drawSmallButton(graphics, backX, backY, 18, 16, backHover);
         graphics.drawString(this.font, "←", backX + 5, backY + 4, 0xFFFFFFFF, true);
 
-        int titleW = this.font.width(this.title);
-        graphics.drawString(this.font, this.title, left + (PANEL_WIDTH - titleW) / 2, top + 9, 0xFF404040, false);
+        UiHelper.drawLightbulbIcon(graphics, left + 34, top + 9);
+        graphics.drawString(this.font, this.title, left + 46, top + 10, UiHelper.getPrimaryTextColor(), false);
 
-        String shortStatus = this.font.plainSubstrByWidth(this.statusText.getString(), PANEL_WIDTH - 24);
-        graphics.drawString(this.font, shortStatus, left + 12, top + 30, this.statusColor, false);
+        graphics.drawString(
+                this.font,
+                Component.translatable("gui.joinnotifier.ideas.author", getPlayerUsername()),
+                left + 12,
+                top + 34,
+                UiHelper.getSecondaryTextColor(),
+                false
+        );
 
-        String subStr = this.subStatusText.getString();
-        if (!subStr.isEmpty()) {
-            String shortSub = this.font.plainSubstrByWidth(subStr, PANEL_WIDTH - 24);
-            graphics.drawString(this.font, shortSub, left + 12, top + 42, 0xFF662222, false);
+        if (!this.statusMessage.getString().isEmpty()) {
+            graphics.drawString(this.font, this.statusMessage, left + 12, top + 104, this.statusColor, false);
         }
 
-        String counter = this.ideaInput.getValue().length() + " / 300";
-        int counterW = this.font.width(counter);
-        graphics.drawString(this.font, counter, left + PANEL_WIDTH - 12 - counterW, top + 82, 0xFF555555, false);
+        if (this.isBanned && !this.banReason.isEmpty()) {
+            Component reasonLine = Component.translatable("gui.joinnotifier.ideas.ban_reason", this.banReason);
+            String trimmed = this.font.plainSubstrByWidth(reasonLine.getString(), PANEL_WIDTH - 24);
+            graphics.drawString(this.font, trimmed, left + 12, top + 118, 0xFFAA2222, false);
+        }
     }
 
     @Override
