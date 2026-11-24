@@ -1,12 +1,14 @@
 package com.example.joinnotifier;
 
 import com.google.gson.*;
+import com.google.gson.reflect.TypeToken;
 import net.fabricmc.loader.api.FabricLoader;
 import net.minecraft.client.Minecraft;
 import net.minecraft.client.User;
 import net.minecraft.client.multiplayer.ServerData;
 import net.minecraft.network.chat.Component;
 
+import java.lang.reflect.Type;
 import java.net.URI;
 import java.net.URLEncoder;
 import java.net.http.HttpClient;
@@ -21,11 +23,10 @@ import java.util.concurrent.CompletableFuture;
 import java.util.concurrent.ConcurrentHashMap;
 
 public class NetworkManager {
-    // ВСТАВЬ СЮДА СВОЮ НАСТОЯЩУЮ ССЫЛКУ ИЗ CLOUDFLARE (без слэша на конце)
-    public static final String API_URL = "There was the url";
+    public static final String API_URL = "There was the URL";
 
-    private static final String USER_AGENT = "Mozilla/5.0 (Windows NT 10.0; Win64; x64) JoinNotifier/1.2.0";
-    private static final Gson GSON = new Gson();
+    private static final String USER_AGENT = "Mozilla/5.0 (Windows NT 10.0; Win64; x64) JoinNotifier/1.3.0";
+    private static final Gson GSON = new GsonBuilder().setPrettyPrinting().create();
     private static final HttpClient HTTP = HttpClient.newBuilder()
             .version(HttpClient.Version.HTTP_1_1)
             .followRedirects(HttpClient.Redirect.NORMAL)
@@ -35,6 +36,10 @@ public class NetworkManager {
     private static final Path CACHE_PATH = FabricLoader.getInstance()
             .getConfigDir()
             .resolve("joinnotifier_servers_cache.json");
+
+    private static final Path APPROVED_CACHE_PATH = FabricLoader.getInstance()
+            .getConfigDir()
+            .resolve("joinnotifier_approved_ideas.json");
 
     private static final Set<String> blockedServers = ConcurrentHashMap.newKeySet();
     private static volatile String adminToken = null;
@@ -69,6 +74,7 @@ public class NetworkManager {
         public String author;
         public String text;
         public long timestamp;
+        public String status = "PENDING"; // PENDING, ACCEPTED, REJECTED
     }
 
     public static class BanItem {
@@ -79,14 +85,16 @@ public class NetworkManager {
     public static class AdminData {
         public final boolean ok;
         public final List<IdeaItem> ideas;
+        public final List<IdeaItem> approvedIdeas;
         public final List<BanItem> bannedUsers;
         public final List<String> blockedServers;
         public final List<String> adminWhitelist;
 
-        public AdminData(boolean ok, List<IdeaItem> ideas, List<BanItem> bannedUsers,
-                         List<String> blockedServers, List<String> adminWhitelist) {
+        public AdminData(boolean ok, List<IdeaItem> ideas, List<IdeaItem> approvedIdeas,
+                         List<BanItem> bannedUsers, List<String> blockedServers, List<String> adminWhitelist) {
             this.ok = ok;
             this.ideas = ideas;
+            this.approvedIdeas = approvedIdeas;
             this.bannedUsers = bannedUsers;
             this.blockedServers = blockedServers;
             this.adminWhitelist = adminWhitelist;
@@ -127,6 +135,59 @@ public class NetworkManager {
             Files.writeString(CACHE_PATH, GSON.toJson(blockedServers));
         } catch (Exception ignored) {
         }
+    }
+
+    private static List<IdeaItem> loadLocalApprovedIdeas() {
+        try {
+            if (Files.exists(APPROVED_CACHE_PATH)) {
+                String json = Files.readString(APPROVED_CACHE_PATH);
+                Type type = new TypeToken<List<IdeaItem>>() {}.getType();
+                List<IdeaItem> list = GSON.fromJson(json, type);
+                if (list != null) return list;
+            }
+        } catch (Exception ignored) {
+        }
+        return new ArrayList<>();
+    }
+
+    private static void saveLocalApprovedIdeas(List<IdeaItem> list) {
+        try {
+            Files.createDirectories(APPROVED_CACHE_PATH.getParent());
+            Files.writeString(APPROVED_CACHE_PATH, GSON.toJson(list));
+        } catch (Exception ignored) {
+        }
+    }
+
+    public static void approveIdeaLocally(IdeaItem item) {
+        if (item == null) return;
+        List<IdeaItem> list = loadLocalApprovedIdeas();
+        IdeaItem copy = new IdeaItem();
+        copy.id = (item.id != null && !item.id.isEmpty()) ? item.id : UUID.randomUUID().toString();
+        copy.author = item.author;
+        copy.text = item.text;
+        copy.timestamp = item.timestamp;
+        copy.status = "PENDING";
+        list.add(0, copy);
+        saveLocalApprovedIdeas(list);
+    }
+
+    public static void setApprovedIdeaStatusLocally(String id, String status) {
+        if (id == null) return;
+        List<IdeaItem> list = loadLocalApprovedIdeas();
+        for (IdeaItem item : list) {
+            if (id.equals(item.id)) {
+                item.status = status;
+                break;
+            }
+        }
+        saveLocalApprovedIdeas(list);
+    }
+
+    public static void removeApprovedIdeaLocally(String id) {
+        if (id == null) return;
+        List<IdeaItem> list = loadLocalApprovedIdeas();
+        list.removeIf(item -> id.equals(item.id));
+        saveLocalApprovedIdeas(list);
     }
 
     public static void refreshSyncIfNeeded(String username, boolean force) {
@@ -355,7 +416,7 @@ public class NetworkManager {
         return CompletableFuture.supplyAsync(() -> {
             try {
                 if (!hasAdminSession()) {
-                    return new AdminData(false, List.of(), List.of(), List.of(), List.of());
+                    return new AdminData(false, List.of(), List.of(), List.of(), List.of(), List.of());
                 }
                 JsonObject body = new JsonObject();
                 body.addProperty("action", "get_all");
@@ -371,24 +432,36 @@ public class NetworkManager {
 
                 HttpResponse<String> resp = HTTP.send(req, HttpResponse.BodyHandlers.ofString());
                 if (resp.statusCode() != 200) {
-                    return new AdminData(false, List.of(), List.of(), List.of(), List.of());
+                    return new AdminData(false, List.of(), List.of(), List.of(), List.of(), List.of());
                 }
 
                 JsonObject obj = JsonParser.parseString(resp.body()).getAsJsonObject();
                 List<IdeaItem> ideas = new ArrayList<>();
-                for (JsonElement el : obj.getAsJsonArray("ideas")) {
-                    ideas.add(GSON.fromJson(el, IdeaItem.class));
+                if (obj.has("ideas") && obj.get("ideas").isJsonArray()) {
+                    for (JsonElement el : obj.getAsJsonArray("ideas")) {
+                        ideas.add(GSON.fromJson(el, IdeaItem.class));
+                    }
+                }
+
+                List<IdeaItem> approved = loadLocalApprovedIdeas();
+                if (obj.has("approvedIdeas") && obj.get("approvedIdeas").isJsonArray()) {
+                    approved = new ArrayList<>();
+                    for (JsonElement el : obj.getAsJsonArray("approvedIdeas")) {
+                        approved.add(GSON.fromJson(el, IdeaItem.class));
+                    }
                 }
 
                 List<BanItem> banned = new ArrayList<>();
-                for (JsonElement el : obj.getAsJsonArray("bannedUsers")) {
-                    if (el.isJsonObject()) {
-                        banned.add(GSON.fromJson(el, BanItem.class));
-                    } else {
-                        BanItem b = new BanItem();
-                        b.name = el.getAsString();
-                        b.reason = "";
-                        banned.add(b);
+                if (obj.has("bannedUsers") && obj.get("bannedUsers").isJsonArray()) {
+                    for (JsonElement el : obj.getAsJsonArray("bannedUsers")) {
+                        if (el.isJsonObject()) {
+                            banned.add(GSON.fromJson(el, BanItem.class));
+                        } else {
+                            BanItem b = new BanItem();
+                            b.name = el.getAsString();
+                            b.reason = "";
+                            banned.add(b);
+                        }
                     }
                 }
 
@@ -399,11 +472,22 @@ public class NetworkManager {
                 for (String s : servers) blockedServers.add(normalizeIp(s));
                 saveCachedBlockedServers();
 
-                return new AdminData(true, ideas, banned, servers, admins);
+                return new AdminData(true, ideas, approved, banned, servers, admins);
             } catch (Exception e) {
-                return new AdminData(false, List.of(), List.of(), List.of(), List.of());
+                return new AdminData(false, List.of(), List.of(), List.of(), List.of(), List.of());
             }
         });
+    }
+
+    /**
+     * Удаление идеи с проверкой обоих распространённых имён action ("remove_idea" и "delete_idea")
+     * и передачей id + target/text для совместимости со старыми записями.
+     */
+    public static CompletableFuture<Boolean> deleteIdeaAsync(IdeaItem idea) {
+        return sendAdminActionAsync("remove_idea", idea.id, idea.author, idea.text)
+                .thenCompose(ok -> ok
+                        ? CompletableFuture.completedFuture(true)
+                        : sendAdminActionAsync("delete_idea", idea.id, idea.author, idea.text));
     }
 
     public static CompletableFuture<Boolean> sendAdminActionAsync(String action, String id, String target, String reason) {
